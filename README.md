@@ -1,110 +1,95 @@
-# HSA_Logging
+# Mysql Slow Query Log
 
-## Mysql Slow Query Log
-- Set up MySQL with slow query log.
-- Configure ELK to work with mysql slow query log.
-- Configure GrayLog2 to work with mysql slow query log.
-- Set different thresholds for long_query_time (0, 1 , 10) and compare performance.
+## Set up MySQL with slow query log.
 
-## Start the Docker containers
-````bash
-docker-compose up -d
-````
-This will start the following services:
-- MySQL (with slow query log enabled)
-- Elasticsearch
-- Logstash
-- Kibana
-- Graylog
-- Telegraf
-- Grafana
-- Node.js app (API server running on port 8080)
+```docker
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: slow_query_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+      - ./mysql/config:/etc/mysql/conf.d
+      - ./mysql/logs:/var/log/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 5s
+```
 
-## Database Setup
-The project should automatically generate two large tables (large_table and another_table) for testing when MySQL starts. However, if the tables were not created correctly, follow the steps below to create them manually.
-### Manual Database Setup
-- Connect to MySQL Dashboard using MySQL Workbench:
-````bash
-Host: localhost
-Port: 3306
-Username: user
-Password: password
-````
-Create the necessary tables manually: Open the following SQL script in MySQL Workbench and execute it:
-````sql
-CREATE DATABASE IF NOT EXISTS slow_query_db;
-USE slow_query_db;
+## Configure ELK to work with mysql slow query log.
 
--- Create the large table
-CREATE TABLE IF NOT EXISTS large_table (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  data VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+```docker
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.0.0
+    environment:
+      - discovery.type=single-node
+    ports:
+      - "9200:9200"
+    volumes:
+      - ./elasticsearch/data:/usr/share/elasticsearch/data
 
--- Insert random data into large_table
-INSERT INTO large_table (data)
-SELECT LEFT(MD5(RAND()), 255)
-FROM information_schema.tables t1
-JOIN information_schema.tables t2
-LIMIT 10000000;
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.0.0
+    volumes:
+      - ./logstash/config:/usr/share/logstash/pipeline
+    command: bash -c "logstash-plugin install logstash-output-gelf && logstash"
+    ports:
+      - "5044:5044"
+    depends_on:
+      - elasticsearch
 
--- Create another table for JOIN queries
-CREATE TABLE IF NOT EXISTS another_table (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  foreign_id INT,
-  description VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (foreign_id) REFERENCES large_table(id) ON DELETE CASCADE
-);
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.0.0
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+```
 
--- Insert random data into another_table
-INSERT INTO another_table (foreign_id, description)
-SELECT t1.id, LEFT(MD5(RAND()), 255)
-FROM large_table t1
-JOIN information_schema.tables t2
-LIMIT 5000000;
-````
+## Configure GrayLog2 to work with mysql slow query log.
 
-## Run the API or SQL Query
-````bash
-curl http://localhost:8080/heavy-query
-````
+```docker
+  graylog:
+    image: graylog/graylog:4.3
+    environment:
+      GRAYLOG_HTTP_EXTERNAL_URI: "http://localhost:9000/"
+      GRAYLOG_ROOT_PASSWORD_SHA2: "your_sha_password"
+      GRAYLOG_PASSWORD_SECRET: "your_random_password_secret"
+    ports:
+      - "9000:9000"
+      - "12201:12201/udp"
+    depends_on:
+      - mongodb
+      - elasticsearch
+```
 
-````bash
-SELECT t1.id, t1.data, COUNT(t2.id) AS join_count, AVG(t2.id) AS avg_id
-FROM large_table t1
-LEFT JOIN another_table t2 ON t1.id = t2.foreign_id
-WHERE t1.id > 56
-GROUP BY t1.id
-HAVING join_count > 10
-ORDER BY t1.created_at DESC
-LIMIT 100000;
-````
+## Set different thresholds for long_query_time (0, 1, 10) and compare performance.
 
-## Monitoring and Logging
-Kibana: Access the Kibana dashboard at http://localhost:5601 to view Elasticsearch logs and visualize slow query logs.
-Graylog: Access the Graylog dashboard at http://localhost:9000 to analyze logs sent via GELF.
-Grafana: Access Grafana at http://localhost:3000 for database performance monitoring metrics (default login: admin / password: adminpassword).
+### long_query_time = 0
+  
+![system](images/1.png)
+![system](images/2.png)
+![system](images/3.png)
 
-## Results
+### long_query_time = 1
 
-- long_query_time = 0
-![system](screenshots/long_query_time_0.png)
-![system](screenshots/long_query_time_0_mysql.png)
-![system](screenshots/long_query_time_0_mysql_2.png)
+![system](images/4.png)
+![system](images/5.png)
+![system](images/6.png)
 
-- long_query_time = 1
-![system](screenshots/long_query_time_1.png)
-![system](screenshots/long_query_time_1_mysql.png)
-![system](screenshots/long_query_time_1_mysql_2.png)
+### long_query_time = 10
 
-- long_query_time = 5
-![system](screenshots/long_query_time_5.png)
-![system](screenshots/long_query_time_5_mysql.png)
-![system](screenshots/long_query_time_5_mysql_2.png)
+![system](images/7.png)
+![system](images/8.png)
+![system](images/9.png)
 
-- long_query_time = 10
-![system](screenshots/long_query_time_10.png)
-![system](screenshots/long_query_time_10_mysql.png)
-![system](screenshots/long_query_time_10_mysql_2.png)
